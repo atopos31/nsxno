@@ -39,7 +39,7 @@ func (a *Agent) Run(ctx context.Context, params openai.ChatCompletionNewParams, 
 	defer close(reactChunk)
 	messages := params.Messages
 	var index int
-	for ; index < a.MaxStep; index++ {
+	for index = 0; index < a.MaxStep; index++ {
 		toolCalls := make(map[int64]*openai.ChatCompletionChunkChoiceDeltaToolCall)
 		var acc openai.ChatCompletionAccumulator
 
@@ -137,7 +137,7 @@ func (a *Agent) RunStream(ctx context.Context, params openai.ChatCompletionNewPa
 	return func(yield func(*ContentResponse, error) bool) {
 		messages := params.Messages
 		var index int
-		for ; index < a.MaxStep; index++ {
+		for index = 0; index < a.MaxStep; index++ {
 			toolCalls := make(map[int64]*openai.ChatCompletionChunkChoiceDeltaToolCall)
 			var acc openai.ChatCompletionAccumulator
 
@@ -273,29 +273,4 @@ func ToolResContents(contents []mcp.Content) iter.Seq2[string, mcp.Content] {
 			}
 		}
 	}
-}
-
-// 将 Mcp 的工具列表转换成 OpenAI 的工具列表
-func ToolsFormMCP(ctx context.Context, session *mcp.ClientSession) ([]openai.ChatCompletionToolParam, error) {
-	mcpToolsRes, err := session.ListTools(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	var tools []openai.ChatCompletionToolParam
-	for _, tool := range mcpToolsRes.Tools {
-		var toolParam openai.ChatCompletionToolParam
-		data, err := json.Marshal(tool.InputSchema)
-		if err != nil {
-			return nil, err
-		}
-		if err := json.Unmarshal(data, &toolParam.Function.Parameters); err != nil {
-			return nil, err
-		}
-		toolParam.Function.Name = tool.Name
-		toolParam.Function.Description = openai.String(tool.Description)
-		toolParam.Function.Strict = openai.Bool(true)
-		toolParam.Function.Parameters["additionalProperties"] = false
-		tools = append(tools, toolParam)
-	}
-	return tools, nil
 }

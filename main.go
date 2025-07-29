@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/atopos31/nsxno/mcpconv"
 	"github.com/atopos31/nsxno/react"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/openai/openai-go"
@@ -22,7 +23,7 @@ func main() {
 		log.Fatal(err)
 	}
 	defer session.Close()
-	tools, err := react.ToolsFormMCP(ctx, session)
+	tools, err := mcpconv.ToolsFormMCP(ctx, session)
 	if err != nil {
 		log.Fatal(err)
 	}
