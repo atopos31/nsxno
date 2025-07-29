@@ -124,6 +124,98 @@ func (a *Agent) Run(ctx context.Context, params openai.ChatCompletionNewParams, 
 	return nil, errors.New("limit max steps")
 }
 
+type ContentResponse struct {
+	Cate      string // message / toolcall / toolres
+	Chunk     openai.ChatCompletionChunk
+	ToolCall  *openai.ChatCompletionChunkChoiceDeltaToolCall
+	ToolRes   *openai.ChatCompletionToolMessageParamContentUnion
+	ToolResID string
+	Step      int
+}
+
+func (a *Agent) RunStream(ctx context.Context, params openai.ChatCompletionNewParams, toolHandler ToolHandle) iter.Seq2[*ContentResponse, error] {
+	return func(yield func(*ContentResponse, error) bool) {
+		messages := params.Messages
+		var index int
+		for ; index < a.MaxStep; index++ {
+			toolCalls := make(map[int64]*openai.ChatCompletionChunkChoiceDeltaToolCall)
+			var acc openai.ChatCompletionAccumulator
+
+			params.Messages = messages
+			stream := a.ChatClient.Chat.Completions.NewStreaming(ctx, params)
+
+			toolMessages := make([]openai.ChatCompletionMessageParamUnion, 0)
+
+			for chunk := range Chunks(stream) {
+				acc.AddChunk(chunk)
+				if !yield(&ContentResponse{
+					Cate:  "message",
+					Chunk: chunk,
+					Step:  index,
+				}, nil) {
+					return
+				}
+				if len(chunk.Choices) < 1 {
+					continue
+				}
+				for _, call := range chunk.Choices[0].Delta.ToolCalls {
+					if _, ok := toolCalls[call.Index]; !ok {
+						toolCalls[call.Index] = &call
+						continue
+					}
+					toolCall := toolCalls[call.Index]
+					toolCall.Function.Arguments += call.Function.Arguments
+					// 流式工具调用拼接完成
+					if gjson.Valid(toolCall.Function.Arguments) {
+						if !yield(&ContentResponse{
+							Cate:     "toolcall",
+							ToolCall: toolCall,
+							Step:     index,
+						}, nil) {
+							return
+						}
+						res, err := toolHandler(ctx, toolCall.Function)
+						if err != nil {
+							toolMessages = append(toolMessages, openai.ToolMessage(err.Error(), toolCall.ID))
+							return
+						}
+						var toolRes openai.ChatCompletionMessageParamUnion
+						if len(res.OfArrayOfContentParts) > 0 {
+							toolRes = openai.ToolMessage(res.OfArrayOfContentParts, toolCall.ID)
+						} else {
+							toolRes = openai.ToolMessage(res.OfString.Value, toolCall.ID)
+						}
+						toolMessages = append(toolMessages, toolRes)
+						if !yield(&ContentResponse{
+							Cate:      "toolres",
+							ToolRes:   res,
+							ToolResID: toolCall.ID,
+							Step:      index,
+						}, nil) {
+							return
+						}
+					}
+				}
+			}
+			if err := stream.Err(); err != nil {
+				if !yield(nil, err) {
+					return
+				}
+			}
+			messages = append(messages, acc.ChatCompletion.Choices[0].Message.ToParam())
+			if len(toolCalls) == 0 {
+				return
+			}
+			messages = append(messages, toolMessages...)
+		}
+		if index >= a.MaxStep {
+			if !yield(nil, errors.New("limit max steps")) {
+				return
+			}
+		}
+	}
+}
+
 func McpToolHandler(session *mcp.ClientSession) ToolHandle {
 	return func(ctx context.Context, call openai.ChatCompletionChunkChoiceDeltaToolCallFunction) (*openai.ChatCompletionToolMessageParamContentUnion, error) {
 		var args json.RawMessage
@@ -138,12 +230,12 @@ func McpToolHandler(session *mcp.ClientSession) ToolHandle {
 		if err != nil {
 			return nil, err
 		}
-		content := ""
-		for _, c := range res.Content {
-			content += c.(*mcp.TextContent).Text
+		content, err := json.Marshal(res.Content)
+		if err != nil {
+			return nil, err
 		}
 		return &openai.ChatCompletionToolMessageParamContentUnion{
-			OfString: openai.String(content),
+			OfString: openai.String(string(content)),
 		}, nil
 	}
 }
